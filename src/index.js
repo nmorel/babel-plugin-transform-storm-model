@@ -11,67 +11,128 @@ export default declare(api => {
       ClassDeclaration(path) {
         path.traverse({
           ClassBody(bodyPath) {
-            bodyPath.node.body.splice(
-              0,
-              0,
-              t.classProperty(t.identifier("__v"), t.numericLiteral(1))
-            );
+            let propertyIndex = 0;
 
-            let propertyIndex = 1;
+            let constructor = null;
+            let computed = [];
+
             bodyPath.traverse({
-              ClassMethod(methodPath) {
-                if (methodPath.node.kind === "get") {
-                  const propertyName = `__${methodPath.node.key.name}`;
-                  const propertyNameVersion = `${propertyName}_v`;
-                  const propertyNameCompute = `${propertyName}_compute`;
-                  bodyPath.node.body.splice(
-                    propertyIndex++,
-                    0,
-                    t.classProperty(
-                      t.identifier(propertyNameVersion),
-                      t.numericLiteral(0)
-                    )
-                  );
+              ClassProperty(propertyPath) {
+                const propertyName = propertyPath.node.key.name;
+                if (!propertyName.startsWith("_")) {
+                  const privateName = "__" + propertyName;
+                  propertyPath.node.key.name = privateName;
+
+                  // Getter
                   bodyPath.node.body.push(
                     t.classMethod(
-                      "method",
-                      t.identifier(propertyNameCompute),
-                      methodPath.node.params,
-                      methodPath.node.body
+                      "get",
+                      t.identifier(propertyName),
+                      [],
+                      t.blockStatement([
+                        t.expressionStatement(
+                          t.callExpression(
+                            t.identifier("this._registerAccess"),
+                            [t.stringLiteral(propertyName)]
+                          )
+                        ),
+                        t.returnStatement(t.identifier(`this.${privateName}`))
+                      ])
                     )
                   );
-                  methodPath.node.body = t.blockStatement([
-                    t.ifStatement(
-                      t.binaryExpression(
-                        "!==",
-                        t.identifier(`this.__v`),
-                        t.identifier(`this.${propertyNameVersion}`)
-                      ),
+
+                  // Setter
+                  bodyPath.node.body.push(
+                    t.classMethod(
+                      "set",
+                      t.identifier(propertyName),
+                      [t.identifier(privateName)],
                       t.blockStatement([
                         t.expressionStatement(
                           t.assignmentExpression(
                             "=",
-                            t.identifier(`this.${propertyName}`),
-                            t.callExpression(
-                              t.identifier(`this.${propertyNameCompute}`),
-                              []
-                            )
-                          )
-                        ),
-                        t.expressionStatement(
-                          t.assignmentExpression(
-                            "=",
-                            t.identifier(`this.${propertyNameVersion}`),
-                            t.identifier(`this.__v`)
+                            t.identifier(`this.${privateName}`),
+                            t.identifier(privateName)
                           )
                         )
                       ])
+                    )
+                  );
+                }
+                propertyIndex++;
+              },
+              ClassMethod(methodPath) {
+                if (methodPath.node.kind === "constructor") {
+                  constructor = methodPath;
+                } else if (methodPath.node.kind === "get") {
+                  const computedPropertyName = methodPath.node.key.name;
+                  const computedPropertyComputeFnName = `__compute__${computedPropertyName}`;
+
+                  bodyPath.node.body.push(
+                    t.classMethod(
+                      "method",
+                      t.identifier(computedPropertyComputeFnName),
+                      methodPath.node.params,
+                      methodPath.node.body
+                    )
+                  );
+
+                  methodPath.node.body = t.blockStatement([
+                    t.expressionStatement(
+                      t.callExpression(t.identifier("this._registerAccess"), [
+                        t.stringLiteral(computedPropertyName)
+                      ])
                     ),
-                    t.returnStatement(t.identifier(`this.${propertyName}`))
+                    t.returnStatement(
+                      t.memberExpression(
+                        t.callExpression(
+                          t.identifier("this._computedProperties.get"),
+                          [t.stringLiteral(computedPropertyName)]
+                        ),
+                        t.identifier("value")
+                      )
+                    )
                   ]);
+
+                  computed.push(computedPropertyName);
                 }
               }
             });
+
+            // Add every computed properties to the map
+            computed.forEach(computedPropertyName => {
+              constructor.node.body.body.push(
+                t.expressionStatement(
+                  t.callExpression(
+                    t.identifier("this._computedProperties.set"),
+                    [
+                      t.stringLiteral(computedPropertyName),
+                      t.objectExpression([
+                        t.objectProperty(
+                          t.identifier("watchedProperties"),
+                          t.newExpression(t.identifier("Set"), [])
+                        ),
+                        t.objectProperty(
+                          t.identifier("compute"),
+                          t.callExpression(
+                            t.identifier(
+                              `this.__compute__${computedPropertyName}.bind`
+                            ),
+                            [t.thisExpression()]
+                          )
+                        )
+                      ])
+                    ]
+                  )
+                )
+              );
+            });
+
+            constructor.node.body.body.push(
+              t.expressionStatement(
+                t.callExpression(t.identifier("this._initComputed"), [])
+              )
+            );
           }
         });
       }
